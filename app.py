@@ -32,7 +32,7 @@ def rule_uploader_section(file_type):
 	rule = st.file_uploader("Upload excel file with rules", type=['xls','xlsx'], key='2')
 
 	if not rule:
-		st.write("Upload a .csv or .xlsx file with rules definition")
+		st.write("Upload a .xsl or .xlsx file with rules definition")
 		return (None, None)
 	else:
 		return get_rule(rule,file_type)
