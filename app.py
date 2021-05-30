@@ -1,26 +1,10 @@
 import streamlit as st
 import pandas as pd
-import io, base64
-#import chardet
+import io, base64, csv
 import SessionState
 
-from matplotlib import pyplot as plt
-
-from pandas_profiling import ProfileReport
-from streamlit_pandas_profiling import st_profile_report
-
-
-### ------- rule section --------- ###
-
-### function that reads Excel file with rules
-#!! (it could be replaced by ectract from database if app had such connection)
-### function expectes minimum 1 sheet
-### each sheet has to contain following columns, with description of metadata
-##  - Target Column   : name of column in table in database, case insensitive
-##  - Attribute Name  : name of column in file being uploaded, case insensitive
-##  - Data Type       : type of column in file being uploaded case insensititve, allowed: 'boolean','byte','integer','smallint','floating point','date time','time','unicode string','object','string'
-##  - Column Size     : maximum length of column allowed, number only, applicable only to 'string' and 'object' types
-def get_rule(file,sheet_name):
+### function that parses excel with rules
+def get_rule(file, sheet_name):
 	extension = file.name.split('.')[-1]
 
 	#take only files with acceptable extensions
@@ -61,13 +45,17 @@ def rule_uploader_section(file_type):
 ### uses parameters selected in sidebar
 @st.cache(persist=True)
 def get_df(file, file_encoding, file_separator, file_quoting):
+	#get extension of the file
 	extension = file.name.split('.')[-1]
+
+	#determine quote sign based on selected option
 	quote = None
 	if file_quoting == 'Sinqle quotes':
 		quote = "'"
 	elif file_quoting == 'Double quotes':
 		quote = '"'
-
+	
+	#using extension and quoting char, run proper read function from pandas
 	if file.type == 'text/csv' or extension.upper() == 'CSV':
 		if quote is None:
 			df = pd.read_csv(file,sep=file_separator,encoding=file_encoding)
@@ -76,6 +64,7 @@ def get_df(file, file_encoding, file_separator, file_quoting):
 	elif extension.upper() == 'XLSX':
 		df = pd.read_excel(file, engine='openpyxl')
 
+	#capitalize columns
 	df.columns = map(str.upper, df.columns)
 	df.index += 1
 	
@@ -86,7 +75,7 @@ def get_df(file, file_encoding, file_separator, file_quoting):
 def file_uploader_section(filename, file_encoding, file_separator, file_quoting):
 
 	st.markdown('------------------------------------------------------------------')
-	st.markdown('#### '+filename+' file')
+	st.markdown('#### %s file' % filename)
 	st.markdown('------------------------------------------------------------------')
 	file = st.file_uploader("Upload %s file" % filename, type=['csv','xlsx'], key='1')
 	
@@ -94,9 +83,9 @@ def file_uploader_section(filename, file_encoding, file_separator, file_quoting)
 		st.write("Upload a .csv file to get started")
 		return None
 	else:
-		#print(chardet.detect(file))
 		df = get_df(file, file_encoding, file_separator, file_quoting)
 		if st.checkbox("Show raw data", False):
+			#limit display of raw data to 10000 lines
 			if len(df) > 10000:
 				st.markdown('_File too big. First 10000 rows presented._')
 				st.write(df.head(10000))
@@ -106,10 +95,6 @@ def file_uploader_section(filename, file_encoding, file_separator, file_quoting)
 
 
 ### ------- help functions section --------- ###
-
-def get_report(df):
-	pr = ProfileReport(df, explorative=True)
-	return pr
 
 ###function generate insert that could be submitted if app had connection to database
 def show_insert(report_dict, table):
@@ -134,25 +119,25 @@ def main():
 	st.write('Select, verify and load data from selected CSV or XLS files into database, based upon delivered rules')
 
 	### --- define session state values --- ###
-	session_state = SessionState.get(sheet_names=None, sheet_selected=None)
+	session_state = SessionState.get(sheet_names=list(), sheet_selected=None)
 
 	### --- generate sidebar --- ###
 	#!! make first selector dependant on sheets in excel with rules
-	if session_state.sheet_names is None or session_state.sheet_names == list():
+	if not isinstance(session_state.sheet_names,list):
 		file_type = st.sidebar.empty()
 	else:
-		file_type = st.sidebar.selectbox('Select file type', ('') if session_state.sheet_names is None else session_state.sheet_names)
+		file_type = st.sidebar.selectbox('Select file type', session_state.sheet_names)
 		session_state.sheet_selected = file_type
 	file_encoding = st.sidebar.selectbox('Select file encoding', ('iso-8859-1', 'utf-8'))
 	file_separator = st.sidebar.selectbox('Select file separator', (';',',','|'))
 	file_quoting = st.sidebar.selectbox('Select file quotation', ('No quotes', 'Single quotes', 'Double quotes'))
-	load_type = st.sidebar.radio('Select mode', ('Upload to DB', 'File analyzer'))
+	load_type = st.sidebar.radio('Select mode', ('Upload to DB', 'Export to CSV'))
 
 	### --- load excel file with rules --- ###
 	### --- with first upload, take first sheet as default one --- ###
 	(dr, sheet_names) = rule_uploader_section(session_state.sheet_selected)
 	session_state.sheet_names = sheet_names
-	if session_state.sheet_selected is None and session_state.sheet_names is not None:
+	if session_state.sheet_selected is None and isinstance(session_state.sheet_names, list):
 		session_state.sheet_selected = session_state.sheet_names[0]
 
 	### --- if selector for file type is empty, set it with sheets from excel --- ###
@@ -163,32 +148,18 @@ def main():
 	if st.checkbox('Show raw data', False, key='3'):
 		st.write(dr)
 
-
 	### --- load actual file --- ###
 	df = None
 	if session_state.sheet_selected is not None:
 		df = file_uploader_section(session_state.sheet_selected, file_encoding, file_separator, file_quoting)
 
-	### --- display report from File analyzer, if requested --- ###
-	if df is not None and load_type == 'File analyzer':
-		if st.checkbox('This is time consuming operation (non-cacheable), tick if you want to continue', False, key='5'):
-			st_profile_report(get_report(df))
-		return None
-
 
 	### --- now, run parsing if both data file and rule file are uploaded --- ###
 	if df is not None and dr is not None:
 		# fixed dictionary that will be used to verify if types are ok
-		types_conv = { '-': None
-			,'boolean': '?'
-			,'byte': 'b'
-			,'integer': 'i'
-			,'smallint': 'i'
-			,'floating point': 'f'
-			,'date time': 'M'
-			,'time': 'm'
-			,'unicode string': 'U'
-			,'object': 'O'
+		types_conv = { 
+			 'integer': 'i'
+			,'float': 'f'
 			,'string': 'O'
 			}
 
@@ -274,19 +245,33 @@ def main():
 		
 		st.table(report_df)
 
-		st.markdown('------------------------------------------------------------------')
-		st.markdown('### Saving file to database ### ')
+		if load_type == 'Export to CSV':
+			quote = "'" if file_quoting == 'Single quotes' else '"' if file_quoting == 'Double quotes' else ""
+			quoting = csv.QUOTE_NONE if file_quoting == 'No quotes' else csv.QUOTE_ALL
+			exp_cols = [report_dict['Expected column'][i] for i in range(len(report_dict['Status'])) if report_dict['Status'][i] == 'OK']
+			csv_file = df[exp_cols].to_csv(sep=file_separator,quoting=quoting, quotechar=quote,encoding=file_encoding, index=False).encode()
+			b64 = base64.b64encode(csv_file).decode()
+			href = f'<a href="data:file/csv;base64,{b64}" download="%s.csv" target="_blank">Download csv file</a>' % session_state.sheet_selected
+			st.markdown('------------------------------------------------------------------')
+			st.markdown('### Download file ###')
+			st.markdown(href,unsafe_allow_html=True)
 
-		if file_is_ok:
-			save_db = st.button('Save file to DB')
-		else:
-			st.markdown("File does not match the rules uploaded. In order to fix it, execute one of the following actions:")
-			st.markdown("* Adjust the rules file")
-			st.markdown("* Correct file with data")
-			st.markdown("Alternatively, you can save only data for the proper columns")
-			save_db = st.button('Save only matching columns',help='Only these columns will be saved for which status is OK')
+		if load_type == 'Upload to DB':		
+
+			st.markdown('------------------------------------------------------------------')
+			st.markdown('### Saving file to database ### ')
+			st.markdown('_This snippet just shows possible insert query as no connection to DB is defined_')
+
+			if file_is_ok:
+				save_db = st.button('Show SQL query')
+			else:
+				st.markdown("File does not match the rules uploaded. In order to fix it, execute one of the following actions:")
+				st.markdown("* Adjust the rules file")
+				st.markdown("* Correct file with data")
+				st.markdown("Alternatively, you can save only data for the proper columns")
+				save_db = st.button('Show SQL query for matching columns',help='Only these columns will be saved for which status is OK')
 			
-		if save_db:
-			st.code(show_insert(report_dict, file_type), language='sql')
+			if save_db:
+				st.code(show_insert(report_dict, file_type), language='sql')
 
 main()
