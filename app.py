@@ -3,6 +3,9 @@ import pandas as pd
 import io, base64, csv
 import SessionState
 
+### set up page settings
+st.set_page_config(page_title="File uploader", layout="wide", initial_sidebar_state="expanded")
+
 ### function that parses excel with rules
 def get_rule(file, sheet_name):
 	extension = file.name.split('.')[-1]
